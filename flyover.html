@@ -9886,7 +9886,7 @@ async function startPreWarm() {
 
   async function fetchBatch(batch) {
     await Promise.allSettled(batch.map(url =>
-      fetch(url, { mode: 'cors', cache: 'force-cache' }).catch(() => {})
+      fetch(url).catch(() => {})
     ));
     done += batch.length;
     const pct = Math.min(100, Math.round(done / tiles.length * 100));
@@ -10013,10 +10013,7 @@ function frame(ts) {
   const dt = Math.min(ts - lastTime, 100);
   lastTime = ts;
 
-  // Adaptive speed: slow to 5% when satellite tiles are still loading
-  const tilesReady = map.isSourceLoaded('satellite');
-  const effectiveSpeed = tilesReady ? speed : speed * 0.05;
-  const step = effectiveSpeed * dt * 0.001 * 8;
+  const step = speed * dt * 0.001 * 16;
   idx = Math.min(idx + step, ROUTE.length - 1);
 
   const iFloor = Math.floor(idx);
