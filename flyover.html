@@ -9813,45 +9813,34 @@ const map = new maplibregl.Map({
   bearing: 0,
   maxPitch: 85,
   antialias: true,
-  maxTileCacheSize: 1000
+  maxTileCacheSize: 1000,
 });
 
 map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), 'top-right');
 map.addControl(new maplibregl.AttributionControl({ compact: true }));
+map.touchZoomRotate.disableRotation();
 
-map.on('load', () => {
-  map.addSource('route-full', { type:'geojson', data: { type:'Feature', geometry: { type:'LineString', coordinates: ROUTE.map(([la,lo])=>[lo,la]) }}});
-  map.addLayer({ id:'route-full-glow', type:'line', source:'route-full', paint: { 'line-color':'#ffffff', 'line-width':7, 'line-opacity':0.18, 'line-blur':3 }});
-  map.addLayer({ id:'route-full', type:'line', source:'route-full', paint: { 'line-color':'#ffffff', 'line-width':2.5, 'line-opacity':0.75, 'line-dasharray':[4,3] }});
-  map.addSource('route-done', { type:'geojson', data: mkGeo([ROUTE[0]]) });
-  map.addLayer({ id:'route-done', type:'line', source:'route-done', paint: { 'line-color':'#ffb347', 'line-width':4, 'line-opacity':0.9 }});
-  map.addSource('runner', { type:'geojson', data: mkPoint(ROUTE[0]) });
-  map.addLayer({ id:'runner-halo', type:'circle', source:'runner', paint: { 'circle-radius':14, 'circle-color':'rgba(255,107,53,0.25)', 'circle-stroke-width':0 }});
-  map.addLayer({ id:'runner-dot', type:'circle', source:'runner', paint: { 'circle-radius':6, 'circle-color':'#ff6b35', 'circle-stroke-width':2, 'circle-stroke-color':'#fff' }});
+// ── Fixed 1280×720 render resolution — scale to fit any window/fullscreen ──
+let currentScale = 1;
+function scaleAppToFit() {
+  const app = document.getElementById('flyover-app');
+  const s = Math.min(window.innerWidth / 1280, window.innerHeight / 720);
+  currentScale = s;
+  const left = (window.innerWidth  - 1280 * s) / 2;
+  const top  = (window.innerHeight - 720  * s) / 2;
+  app.style.transform = `scale(${s})`;
+  app.style.left = left + 'px';
+  app.style.top  = top  + 'px';
+}
+scaleAppToFit();
+window.addEventListener('resize', scaleAppToFit);
+document.addEventListener('fullscreenchange',       scaleAppToFit);
+document.addEventListener('webkitfullscreenchange', scaleAppToFit);
 
-  const aidPts = [
-    { name:'Barlow km11', idx:AIDS.barlow, c:'#e67e22' },
-    { name:'Windsor Knot km16', idx:AIDS.windsor, c:'#e74c3c' },
-    { name:'Wheatman km23', idx:AIDS.wheatman, c:'#9b59b6' },
-    { name:'★ Goodwin km33', idx:AIDS.goodwin, c:'#27ae60' },
-    { name:'START', idx:0, c:'#2ecc71' },
-    { name:'FINISH', idx:ROUTE.length-1, c:'#f1c40f' },
-  ];
-  map.addSource('aids', { type:'geojson', data: { type:'FeatureCollection', features: aidPts.map(a=>{ return { type:'Feature', properties:{ name:a.name, color:a.c }, geometry:{ type:'Point', coordinates:[ROUTE[a.idx][1],ROUTE[a.idx][0]] }}}) }});
-  map.addLayer({ id:'aid-dots', type:'circle', source:'aids', paint:{ 'circle-radius':5, 'circle-color':['get','color'], 'circle-stroke-width':2, 'circle-stroke-color':'#fff' }});
-  map.addLayer({ id:'aid-labels', type:'symbol', source:'aids', layout:{ 'text-field':['get','name'], 'text-size':11, 'text-offset':[0,-1.2], 'text-anchor':'bottom' }, paint:{ 'text-color':'#fff', 'text-halo-color':'rgba(0,0,0,0.8)', 'text-halo-width':1.5 }});
-
-  map.flyTo({ center:[-107.990, 50.637], zoom:11.5, pitch:30, bearing:0, duration:3000, essential:true });
-  initElevAsync();
-
-  map.once('idle', () => {
-    setTimeout(() => startPreWarm(), 600);
-  });
-});
+map.dragPan.disable();
+map.dragRotate.disable();
 
 // ── Tile pre-fetch: directly fetch all route tiles into browser HTTP cache ──
-// Zoom 13 (overview), 14 (mid), 15 (detail) — 272 tiles total, ~21 MB
-// ESRI tile URL: tile/{z}/{y}/{x}
 function tileBounds(lat, lon, z) {
   const x = Math.floor((lon + 180) / 360 * Math.pow(2, z));
   const y = Math.floor((1 - Math.log(Math.tan(lat * Math.PI / 180) + 1 / Math.cos(lat * Math.PI / 180)) / Math.PI) / 2 * Math.pow(2, z));
@@ -9889,7 +9878,7 @@ async function startPreWarm() {
 
   async function fetchBatch(batch) {
     await Promise.allSettled(batch.map(url =>
-      fetch(url).catch(() => {})
+      fetch(url, { mode: 'cors', cache: 'force-cache' }).catch(() => {})
     ));
     done += batch.length;
     const pct = Math.min(100, Math.round(done / tiles.length * 100));
@@ -9897,12 +9886,10 @@ async function startPreWarm() {
     pctEl.textContent = pct + '%';
   }
 
-  // Fetch in concurrent batches
   for (let i = 0; i < tiles.length; i += CONCURRENT) {
     await fetchBatch(tiles.slice(i, i + CONCURRENT));
   }
 
-  // Brief camera sweep to warm MapLibre's WebGL texture cache
   sub.textContent = 'Warming 3D renderer…';
   bar.style.width = '100%';
   await warmMapLibreCache();
@@ -9932,80 +9919,6 @@ function warmMapLibreCache() {
   });
 }
 
-function mkGeo(pts) { return { type:'Feature', geometry:{ type:'LineString', coordinates: pts.map(([la,lo])=>[lo,la]) }}; }
-function mkPoint([la,lo]) { return { type:'Feature', geometry:{ type:'Point', coordinates:[lo,la] }}; }
-
-// ── Scroll wheel zoom ──
-const ZOOM_MIN = 13.5, ZOOM_MAX = 16.5;
-document.getElementById('map').addEventListener('wheel', (e) => {
-  e.preventDefault();
-  userZoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, userZoom - e.deltaY * 0.003));
-}, { passive: false });
-
-// ── Manual drag-to-rotate ──
-map.dragPan.disable();
-map.dragRotate.disable();
-map.touchZoomRotate.disableRotation();
-
-map.on('load', () => {
-  addScrubberTicks();
-  const canvas = map.getCanvas();
-  canvas.addEventListener('mousedown', (e) => {
-    if (e.button !== 0) return;
-    e.preventDefault();
-    dragStartX = e.clientX;
-    dragStartBearing = curMapBearing;
-    if (!manualMode) {
-      manualMode = true;
-      manualBearing = curMapBearing;
-      document.getElementById('btn-auto').style.display = 'flex';
-    }
-  });
-  canvas.addEventListener('mousemove', (e) => {
-    if (!manualMode || e.buttons !== 1) return;
-    const dx = (e.clientX - dragStartX) / currentScale;
-    manualBearing = (dragStartBearing + dx * 0.4 + 360) % 360;
-    curMapBearing = manualBearing;
-  });
-  canvas.addEventListener('mouseup', () => {});
-  canvas.addEventListener('mouseleave', () => {});
-});
-
-function returnToAuto() {
-  manualMode = false;
-  document.getElementById('btn-auto').style.display = 'none';
-  curMapBearing = getCamBearing(idx);
-}
-
-// ── Pitch toggle ──
-function togglePitch() {
-  curPitch = curPitch === 60 ? 45 : curPitch === 45 ? 30 : 60;
-  document.getElementById('btn-pitch').textContent = `📐 Pitch ${curPitch}°`;
-}
-
-// ── Overview ──
-function showOverview() {
-  map.flyTo({ center:[-107.990, 50.637], zoom:11.5, pitch:30, bearing:0, duration:2000, essential:true });
-}
-
-// ── Aid alert ──
-function showAidAlert(key) {
-  const m = AID_META[key];
-  currentAlertKey = key;
-  document.getElementById('aa-dot').style.background = m.color;
-  const _aTxt = document.getElementById('aa-txt');
-  const _aB = document.createElement('b');
-  _aB.textContent = m.label;
-  _aTxt.textContent = '';
-  _aTxt.appendChild(_aB);
-  _aTxt.appendChild(document.createTextNode(` ahead · km ${m.km}`));
-  document.getElementById('aid-alert').classList.add('show');
-}
-function hideAidAlert() {
-  document.getElementById('aid-alert').classList.remove('show');
-  currentAlertKey = null;
-}
-
 // ── Animation ──
 function startAnim() {
   playing = true;
@@ -10021,14 +9934,14 @@ function frame(ts) {
   const dt = Math.min(ts - lastTime, 100);
   lastTime = ts;
 
-  const step = speed * dt * 0.001 * 16;
+  const step = speed * dt * 0.001 * 8;
   idx = Math.min(idx + step, ROUTE.length - 1);
 
   const iFloor = Math.floor(idx);
-  const remainder = idx - iFloor;
+  const rem = idx - iFloor;
   const iNext = Math.min(iFloor + 1, ROUTE.length - 1);
-  const lat = ROUTE[iFloor][0] + (ROUTE[iNext][0] - ROUTE[iFloor][0]) * remainder;
-  const lon = ROUTE[iFloor][1] + (ROUTE[iNext][1] - ROUTE[iFloor][1]) * remainder;
+  const lat = ROUTE[iFloor][0] + (ROUTE[iNext][0] - ROUTE[iFloor][0]) * rem;
+  const lon = ROUTE[iFloor][1] + (ROUTE[iNext][1] - ROUTE[iFloor][1]) * rem;
   const interpPos = [lat, lon];
 
   let mapBearing;
@@ -10036,7 +9949,7 @@ function frame(ts) {
     mapBearing = manualBearing;
     curMapBearing = manualBearing;
   } else {
-    const targetMapBearing = getCamBearing(idx + remainder);
+    const targetMapBearing = getCamBearing(idx);
     curMapBearing = lerpBearing(curMapBearing, targetMapBearing, 0.06);
     mapBearing = curMapBearing;
   }
@@ -10046,32 +9959,30 @@ function frame(ts) {
   const fwdLat = lat + (OFFSET_M / 111320) * Math.cos(bRad);
   const fwdLon = lon + (OFFSET_M / (111320 * Math.cos(lat * Math.PI / 180))) * Math.sin(bRad);
   const center = [fwdLon, fwdLat];
-  const zoom = userZoom;
 
-  // Smooth camera movement
-  map.easeTo({ center, bearing: mapBearing, pitch: curPitch, zoom, duration: 100, easing: t => t });
+  map.easeTo({ center, bearing: mapBearing, pitch: curPitch, zoom: userZoom, duration: 100, easing: t => t });
 
   if (map.getSource('runner')) {
     map.getSource('runner').setData(mkPoint(interpPos));
-    map.getSource('route-done').setData(mkGeo(ROUTE.slice(0, iFloor+1)));
+    map.getSource('route-done').setData(mkGeo(ROUTE.slice(0, iFloor + 1)));
   }
 
   const px = map.project([lon, lat]);
   const kmLabel = document.getElementById('runner-km');
   kmLabel.style.display = 'block';
-  kmLabel.style.left = px.x + 'px';
-  kmLabel.style.top  = px.y + 'px';
-  kmLabel.textContent = (cum[iFloor]/1000).toFixed(1) + ' km';
+  kmLabel.style.left = (px.x / currentScale) + 'px';
+  kmLabel.style.top  = (px.y / currentScale) + 'px';
+  kmLabel.textContent = (cum[iFloor] / 1000).toFixed(1) + ' km';
 
-  const pct = idx / (ROUTE.length-1);
-  document.getElementById('scrub-fill').style.width = (pct*100)+'%';
-  document.getElementById('scrub-dot').style.left = (pct*100)+'%';
-  document.getElementById('kv').textContent = (cum[iFloor]/1000).toFixed(1);
-  const camAlt = Math.round(200 / Math.pow(2, zoom-14));
-  document.getElementById('alt-disp').textContent = '~'+camAlt+'m';
+  const pct = idx / (ROUTE.length - 1);
+  document.getElementById('scrub-fill').style.width = (pct * 100) + '%';
+  document.getElementById('scrub-dot').style.left   = (pct * 100) + '%';
+  document.getElementById('kv').textContent = (cum[iFloor] / 1000).toFixed(1);
+  const camAlt = Math.round(200 / Math.pow(2, userZoom - 14));
+  document.getElementById('alt-disp').textContent = '~' + camAlt + 'm';
 
-  for (const [key,aidI] of Object.entries(AIDS))
-    document.getElementById('d-'+key).classList.toggle('lit', idx>=aidI);
+  for (const [key, aidI] of Object.entries(AIDS))
+    document.getElementById('d-' + key).classList.toggle('lit', idx >= aidI);
 
   if (ELEV) drawElevProfile(iFloor);
 
@@ -10093,6 +10004,7 @@ function frame(ts) {
   requestAnimationFrame(frame);
 }
 
+// ── Controls ──
 function togglePlay() {
   if (idx >= ROUTE.length - 1) { restart(); return; }
   playing = !playing;
@@ -10123,7 +10035,40 @@ function seekClick(e) {
   if (!playing) { lastTime = null; requestAnimationFrame(frame); }
 }
 
-// ── Elevation profile ──
+function returnToAuto() {
+  manualMode = false;
+  document.getElementById('btn-auto').style.display = 'none';
+  curMapBearing = getCamBearing(idx);
+}
+
+function togglePitch() {
+  curPitch = curPitch === 60 ? 45 : curPitch === 45 ? 30 : 60;
+  document.getElementById('btn-pitch').textContent = `📐 Pitch ${curPitch}°`;
+}
+
+function showOverview() {
+  map.flyTo({ center:[-107.990, 50.637], zoom:11.5, pitch:30, bearing:0, duration:2000, essential:true });
+}
+
+// ── Aid alert (DOM API — no innerHTML) ──
+function showAidAlert(key) {
+  const m = AID_META[key];
+  currentAlertKey = key;
+  document.getElementById('aa-dot').style.background = m.color;
+  const _aTxt = document.getElementById('aa-txt');
+  const _aB = document.createElement('b');
+  _aB.textContent = m.label;
+  _aTxt.textContent = '';
+  _aTxt.appendChild(_aB);
+  _aTxt.appendChild(document.createTextNode(` ahead · km ${m.km}`));
+  document.getElementById('aid-alert').classList.add('show');
+}
+function hideAidAlert() {
+  document.getElementById('aid-alert').classList.remove('show');
+  currentAlertKey = null;
+}
+
+// ── Elevation ──
 async function initElevAsync() {
   if (await fetchElevFromTiles()) return;
   if (await fetchElevFromAPI()) return;
@@ -10133,26 +10078,26 @@ async function initElevAsync() {
 
 async function fetchElevFromTiles() {
   try {
-    const ZOOM=11, NSAMP=60;
-    const sIdxs=[], sElev=[];
+    const ZOOM = 11, NSAMP = 60;
+    const sIdxs = [], sElev = [];
     const step = Math.floor(ROUTE.length / NSAMP);
-    for (let s=0; s<NSAMP; s++) {
-      const ri = Math.min(s*step, ROUTE.length-1);
-      const [lat,lon] = ROUTE[ri];
-      const x = (lon+180)/360 * Math.pow(2,ZOOM);
-      const y = (1 - Math.log(Math.tan(lat*Math.PI/180)+1/Math.cos(lat*Math.PI/180))/Math.PI)/2 * Math.pow(2,ZOOM);
-      const tx=Math.floor(x), ty=Math.floor(y);
-      const px=Math.floor((x-tx)*256), py=Math.floor((y-ty)*256);
-      const url=`https://s3.amazonaws.com/elevation-tiles-prod/terrarium/${ZOOM}/${tx}/${ty}.png`;
+    for (let s = 0; s < NSAMP; s++) {
+      const ri = Math.min(s * step, ROUTE.length - 1);
+      const [lat, lon] = ROUTE[ri];
+      const x = (lon + 180) / 360 * Math.pow(2, ZOOM);
+      const y = (1 - Math.log(Math.tan(lat * Math.PI / 180) + 1 / Math.cos(lat * Math.PI / 180)) / Math.PI) / 2 * Math.pow(2, ZOOM);
+      const tx = Math.floor(x), ty = Math.floor(y);
+      const px = Math.floor((x - tx) * 256), py = Math.floor((y - ty) * 256);
+      const url = `https://s3.amazonaws.com/elevation-tiles-prod/terrarium/${ZOOM}/${tx}/${ty}.png`;
       const resp = await fetch(url);
       if (!resp.ok) continue;
       const blob = await resp.blob();
       const img = await createImageBitmap(blob);
-      const c = document.createElement('canvas'); c.width=256; c.height=256;
-      c.getContext('2d').drawImage(img,0,0);
-      const d = c.getContext('2d').getImageData(px,py,1,1).data;
+      const c = document.createElement('canvas'); c.width = 256; c.height = 256;
+      c.getContext('2d').drawImage(img, 0, 0);
+      const d = c.getContext('2d').getImageData(px, py, 1, 1).data;
       sIdxs.push(ri);
-      sElev.push(d[0]*256 + d[1] + d[2]/256 - 32768);
+      sElev.push(d[0] * 256 + d[1] + d[2] / 256 - 32768);
     }
     if (sElev.length < 10) return false;
     buildElevArray(sIdxs, sElev);
@@ -10162,13 +10107,12 @@ async function fetchElevFromTiles() {
 
 async function fetchElevFromAPI() {
   try {
-    const NSAMP=60;
+    const NSAMP = 60;
     const step = Math.floor(ROUTE.length / NSAMP);
-    const pts = [];
-    const sIdxs = [];
-    for (let s=0; s<NSAMP; s++) {
-      const ri = Math.min(s*step, ROUTE.length-1);
-      pts.push(ROUTE[ri][0]+','+ROUTE[ri][1]);
+    const pts = [], sIdxs = [];
+    for (let s = 0; s < NSAMP; s++) {
+      const ri = Math.min(s * step, ROUTE.length - 1);
+      pts.push(ROUTE[ri][0] + ',' + ROUTE[ri][1]);
       sIdxs.push(ri);
     }
     const url = 'https://api.opentopodata.org/v1/srtm30m?locations=' + pts.join('|');
@@ -10183,17 +10127,17 @@ async function fetchElevFromAPI() {
 
 function buildElevArray(sIdxs, sElev) {
   ELEV = new Float32Array(ROUTE.length);
-  for (let i=0; i<ROUTE.length; i++) {
-    let lo=0;
-    while (lo<sIdxs.length-2 && sIdxs[lo+1]<=i) lo++;
-    const hi=Math.min(lo+1,sIdxs.length-1);
-    const span=sIdxs[hi]-sIdxs[lo];
-    const t=span>0?(i-sIdxs[lo])/span:0;
-    ELEV[i]=sElev[lo]*(1-t)+sElev[hi]*t;
+  for (let i = 0; i < ROUTE.length; i++) {
+    let lo = 0;
+    while (lo < sIdxs.length - 2 && sIdxs[lo + 1] <= i) lo++;
+    const hi = Math.min(lo + 1, sIdxs.length - 1);
+    const span = sIdxs[hi] - sIdxs[lo];
+    const t = span > 0 ? (i - sIdxs[lo]) / span : 0;
+    ELEV[i] = sElev[lo] * (1 - t) + sElev[hi] * t;
   }
-  const el=document.getElementById('elev-loading');
-  if(el) el.style.display='none';
-  requestAnimationFrame(()=>{ resizeElevCanvas(); cacheElevBg(); drawElevProfile(0); });
+  const el = document.getElementById('elev-loading');
+  if (el) el.style.display = 'none';
+  requestAnimationFrame(() => { resizeElevCanvas(); cacheElevBg(); drawElevProfile(0); });
 }
 
 function resizeElevCanvas() {
@@ -10201,7 +10145,6 @@ function resizeElevCanvas() {
   const strip    = document.getElementById('elev-strip');
   const scrubber = document.getElementById('scrubber');
   if (!canvas || !strip || !scrubber || strip.offsetWidth === 0) return;
-  // offsetLeft/offsetWidth are in unscaled CSS pixels — immune to CSS transform scaling
   const leftPx = Math.max(0, scrubber.offsetLeft - strip.offsetLeft);
   const scrubW = scrubber.offsetWidth;
   canvas.style.position = 'absolute';
@@ -10220,97 +10163,133 @@ let elevBgCache = null;
 function cacheElevBg() {
   const canvas = document.getElementById('elev-canvas');
   if (!canvas || !ELEV) return;
-  const W=canvas.width, H=canvas.height;
-  const ctx=canvas.getContext('2d');
-  const minE=Math.min(...ELEV), maxE=Math.max(...ELEV), rng=maxE-minE||1;
-  const PAD=6*devicePixelRatio;
-  ctx.clearRect(0,0,W,H);
+  const W = canvas.width, H = canvas.height;
+  const ctx = canvas.getContext('2d');
+  const minE = Math.min(...ELEV), maxE = Math.max(...ELEV), rng = maxE - minE || 1;
+  const PAD = 6 * devicePixelRatio;
+  ctx.clearRect(0, 0, W, H);
   ctx.beginPath();
-  for (let i=0;i<ROUTE.length;i++) {
-    const x=(i/(ROUTE.length-1))*W;
-    const y=H-PAD-((ELEV[i]-minE)/rng)*(H-PAD*2);
-    i===0?ctx.moveTo(x,y):ctx.lineTo(x,y);
+  for (let i = 0; i < ROUTE.length; i++) {
+    const x = (i / (ROUTE.length - 1)) * W;
+    const y = H - PAD - ((ELEV[i] - minE) / rng) * (H - PAD * 2);
+    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
   }
-  ctx.lineTo(W,H); ctx.lineTo(0,H); ctx.closePath();
-  const grad=ctx.createLinearGradient(0,0,0,H);
-  grad.addColorStop(0,'rgba(255,107,53,0.35)');
-  grad.addColorStop(1,'rgba(255,107,53,0.04)');
-  ctx.fillStyle=grad; ctx.fill();
+  ctx.lineTo(W, H); ctx.lineTo(0, H); ctx.closePath();
+  const grad = ctx.createLinearGradient(0, 0, 0, H);
+  grad.addColorStop(0, 'rgba(255,107,53,0.35)');
+  grad.addColorStop(1, 'rgba(255,107,53,0.04)');
+  ctx.fillStyle = grad; ctx.fill();
   ctx.beginPath();
-  for (let i=0;i<ROUTE.length;i++) {
-    const x=(i/(ROUTE.length-1))*W;
-    const y=H-PAD-((ELEV[i]-minE)/rng)*(H-PAD*2);
-    i===0?ctx.moveTo(x,y):ctx.lineTo(x,y);
+  for (let i = 0; i < ROUTE.length; i++) {
+    const x = (i / (ROUTE.length - 1)) * W;
+    const y = H - PAD - ((ELEV[i] - minE) / rng) * (H - PAD * 2);
+    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
   }
-  ctx.strokeStyle='rgba(255,150,80,0.6)'; ctx.lineWidth=1.5*devicePixelRatio; ctx.stroke();
-  elevBgCache = ctx.getImageData(0,0,W,H);
+  ctx.strokeStyle = 'rgba(255,150,80,0.6)'; ctx.lineWidth = 1.5 * devicePixelRatio; ctx.stroke();
+  elevBgCache = ctx.getImageData(0, 0, W, H);
 }
 
 function drawElevProfile(i) {
   const canvas = document.getElementById('elev-canvas');
   if (!canvas || !ELEV || !elevBgCache) return;
-  const W=canvas.width, H=canvas.height;
-  const ctx=canvas.getContext('2d');
-  ctx.putImageData(elevBgCache,0,0);
-  const minE=Math.min(...ELEV), maxE=Math.max(...ELEV), rng=maxE-minE||1;
-  const PAD=6*devicePixelRatio;
-  const x=(i/(ROUTE.length-1))*W;
-  const y=H-PAD-((ELEV[i]-minE)/rng)*(H-PAD*2);
-  ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,H);
-  ctx.strokeStyle='rgba(255,255,255,0.25)'; ctx.lineWidth=1*devicePixelRatio; ctx.stroke();
-  ctx.beginPath(); ctx.arc(x,y,4*devicePixelRatio,0,Math.PI*2);
-  ctx.fillStyle='#ff6b35'; ctx.fill();
-  ctx.strokeStyle='#fff'; ctx.lineWidth=1.5*devicePixelRatio; ctx.stroke();
+  const W = canvas.width, H = canvas.height;
+  const ctx = canvas.getContext('2d');
+  ctx.putImageData(elevBgCache, 0, 0);
+  const minE = Math.min(...ELEV), maxE = Math.max(...ELEV), rng = maxE - minE || 1;
+  const PAD = 6 * devicePixelRatio;
+  const x = (i / (ROUTE.length - 1)) * W;
+  const y = H - PAD - ((ELEV[i] - minE) / rng) * (H - PAD * 2);
+  ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H);
+  ctx.strokeStyle = 'rgba(255,255,255,0.25)'; ctx.lineWidth = 1 * devicePixelRatio; ctx.stroke();
+  ctx.beginPath(); ctx.arc(x, y, 4 * devicePixelRatio, 0, Math.PI * 2);
+  ctx.fillStyle = '#ff6b35'; ctx.fill();
+  ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5 * devicePixelRatio; ctx.stroke();
 }
+
+function mkGeo(pts) { return { type:'Feature', geometry:{ type:'LineString', coordinates: pts.map(([la,lo])=>[lo,la]) }}; }
+function mkPoint([la,lo]) { return { type:'Feature', geometry:{ type:'Point', coordinates:[lo,la] }}; }
+
+// ── Map load: add layers, drag controls, start prewarm ──
+map.on('load', () => {
+  map.addSource('route-full', { type:'geojson', data: { type:'Feature', geometry: { type:'LineString', coordinates: ROUTE.map(([la,lo])=>[lo,la]) }}});
+  map.addLayer({ id:'route-full-glow', type:'line', source:'route-full', paint: { 'line-color':'#ffffff', 'line-width':7, 'line-opacity':0.18, 'line-blur':3 }});
+  map.addLayer({ id:'route-full', type:'line', source:'route-full', paint: { 'line-color':'#ffffff', 'line-width':2.5, 'line-opacity':0.75, 'line-dasharray':[4,3] }});
+  map.addSource('route-done', { type:'geojson', data: mkGeo([ROUTE[0]]) });
+  map.addLayer({ id:'route-done', type:'line', source:'route-done', paint: { 'line-color':'#ffb347', 'line-width':4, 'line-opacity':0.9 }});
+  map.addSource('runner', { type:'geojson', data: mkPoint(ROUTE[0]) });
+  map.addLayer({ id:'runner-halo', type:'circle', source:'runner', paint: { 'circle-radius':14, 'circle-color':'rgba(255,107,53,0.25)', 'circle-stroke-width':0 }});
+  map.addLayer({ id:'runner-dot', type:'circle', source:'runner', paint: { 'circle-radius':6, 'circle-color':'#ff6b35', 'circle-stroke-width':2, 'circle-stroke-color':'#fff' }});
+
+  const aidPts = [
+    { name:'Barlow - 11 km',       idx:AIDS.barlow,   c:'#e67e22' },
+    { name:'Windsor Knot - 16 km', idx:AIDS.windsor,  c:'#e74c3c' },
+    { name:'Wheatman - 23 km',     idx:AIDS.wheatman, c:'#9b59b6' },
+    { name:'Goodwin - 32 km',      idx:AIDS.goodwin,  c:'#27ae60' },
+    { name:'Start',                idx:0,              c:'#2ecc71' },
+    { name:'Finish',               idx:ROUTE.length-1, c:'#f1c40f' },
+  ];
+  map.addSource('aids', { type:'geojson', data: { type:'FeatureCollection', features: aidPts.map(a=>({ type:'Feature', properties:{ name:a.name, color:a.c }, geometry:{ type:'Point', coordinates:[ROUTE[a.idx][1],ROUTE[a.idx][0]] }})) }});
+  map.addLayer({ id:'aid-dots', type:'circle', source:'aids', paint:{ 'circle-radius':5, 'circle-color':['get','color'], 'circle-stroke-width':2, 'circle-stroke-color':'#fff' }});
+  map.addLayer({ id:'aid-labels', type:'symbol', source:'aids', layout:{ 'text-field':['get','name'], 'text-size':11, 'text-offset':[0,-1.2], 'text-anchor':'bottom' }, paint:{ 'text-color':'#fff', 'text-halo-color':'rgba(0,0,0,0.8)', 'text-halo-width':1.5 }});
+
+  // Canvas drag for manual bearing
+  const canvas = map.getCanvas();
+  canvas.addEventListener('mousedown', (e) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    dragStartX = e.clientX;
+    dragStartBearing = curMapBearing;
+    if (!manualMode) {
+      manualMode = true;
+      manualBearing = curMapBearing;
+      document.getElementById('btn-auto').style.display = 'flex';
+    }
+  });
+  canvas.addEventListener('mousemove', (e) => {
+    if (!manualMode || e.buttons !== 1) return;
+    const dx = (e.clientX - dragStartX) / currentScale;
+    manualBearing = (dragStartBearing + dx * 0.4 + 360) % 360;
+    curMapBearing = manualBearing;
+  });
+  canvas.addEventListener('mouseup', () => {});
+  canvas.addEventListener('mouseleave', () => {});
+
+  // Touch support
+  canvas.addEventListener('touchstart', (e) => {
+    e.preventDefault();
+    dragStartX = e.touches[0].clientX;
+    dragStartBearing = curMapBearing;
+    if (!manualMode) {
+      manualMode = true;
+      manualBearing = curMapBearing;
+      document.getElementById('btn-auto').style.display = 'flex';
+    }
+  }, { passive: false });
+  canvas.addEventListener('touchmove', (e) => {
+    e.preventDefault();
+    if (!manualMode) return;
+    const dx = (e.touches[0].clientX - dragStartX) / currentScale;
+    manualBearing = (dragStartBearing + dx * 0.4 + 360) % 360;
+    curMapBearing = manualBearing;
+  }, { passive: false });
+
+  // Scroll wheel zoom
+  canvas.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    userZoom = Math.max(13.5, Math.min(16.5, userZoom - e.deltaY * 0.003));
+  }, { passive: false });
+
+  // Overview flyout, then trigger prewarm when idle
+  map.flyTo({ center:[-107.990, 50.637], zoom:11.5, pitch:30, bearing:0, duration:3000, essential:true });
+  initElevAsync();
+  addScrubberTicks();
+
+  map.once('idle', () => {
+    setTimeout(() => startPreWarm(), 600);
+  });
+});
 
 window.addEventListener('resize', resizeElevCanvas);
-
-// ── Fixed 1280×720 render resolution — scale to fit any window/fullscreen ──
-let currentScale = 1;
-function scaleAppToFit() {
-  const app = document.getElementById('flyover-app');
-  const s = Math.min(window.innerWidth / 1280, window.innerHeight / 720);
-  currentScale = s;
-  const left = (window.innerWidth  - 1280 * s) / 2;
-  const top  = (window.innerHeight - 720  * s) / 2;
-  app.style.transform = `scale(${s})`;
-  app.style.left = left + 'px';
-  app.style.top  = top  + 'px';
-}
-scaleAppToFit();
-window.addEventListener('resize', scaleAppToFit);
-document.addEventListener('fullscreenchange',       scaleAppToFit);
-document.addEventListener('webkitfullscreenchange', scaleAppToFit);
-
-// ── Pause animation on resize/fullscreen until tiles settle ──
-let resizePauseTimer = null;
-
-function handleViewportChange() {
-  if (!playing) return;
-  playing = false;
-  clearTimeout(resizePauseTimer);
-  resizePauseTimer = setTimeout(() => {
-    resizeElevCanvas();
-    map.resize();
-    // Wait for MapLibre to finish loading tiles at new size
-    function waitIdle() {
-      if (map.areTilesLoaded()) {
-        playing = true;
-        lastTime = null;
-        requestAnimationFrame(frame);
-      } else {
-        setTimeout(waitIdle, 300);
-      }
-    }
-    waitIdle();
-  }, 400);
-}
-
-window.addEventListener('resize', handleViewportChange);
-document.addEventListener('fullscreenchange', handleViewportChange);
-document.addEventListener('webkitfullscreenchange', handleViewportChange);
-document.addEventListener('mozfullscreenchange', handleViewportChange);
 </script>
-</div><!-- /flyover-app -->
 </body>
 </html>
