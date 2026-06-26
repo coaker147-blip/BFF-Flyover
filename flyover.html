@@ -10257,6 +10257,27 @@ function drawElevProfile(i) {
 }
 
 window.addEventListener('resize', resizeElevCanvas);
+
+// ── Pause animation on resize/fullscreen until tiles settle ──
+let resizePauseTimer = null;
+window.addEventListener('resize', () => {
+  if (!playing) return;
+  playing = false;
+  clearTimeout(resizePauseTimer);
+  resizePauseTimer = setTimeout(() => {
+    // Wait for MapLibre to finish loading tiles at new size
+    function waitIdle() {
+      if (map.areTilesLoaded()) {
+        playing = true;
+        lastTime = null;
+        requestAnimationFrame(frame);
+      } else {
+        setTimeout(waitIdle, 200);
+      }
+    }
+    waitIdle();
+  }, 300);
+});
 </script>
 </body>
 </html>
