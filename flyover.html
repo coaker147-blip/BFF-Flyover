@@ -116,6 +116,35 @@
     position:absolute; inset:0; display:flex; align-items:center;
     justify-content:center; font-size:9px; color:#282828; letter-spacing:.12em;
   }
+  /* ── Tile pre-warm overlay ── */
+  #prewarm-overlay {
+    position:absolute; inset:0; z-index:500;
+    background:rgba(0,0,0,0.82); backdrop-filter:blur(6px);
+    display:flex; align-items:center; justify-content:center;
+  }
+  #prewarm-box {
+    text-align:center; padding:36px 48px;
+    background:#0d0d0d; border:1px solid #222; border-radius:14px;
+    box-shadow:0 8px 40px rgba(0,0,0,0.7);
+  }
+  #prewarm-title {
+    font-size:13px; font-weight:700; letter-spacing:.18em;
+    color:#ff6b35; margin-bottom:10px;
+  }
+  #prewarm-sub {
+    font-size:10px; color:#555; letter-spacing:.06em; margin-bottom:22px;
+  }
+  #prewarm-bar-wrap {
+    width:320px; height:4px; background:#1a1a1a; border-radius:2px; overflow:hidden; margin:0 auto 12px;
+  }
+  #prewarm-bar {
+    height:100%; width:0%; background:linear-gradient(90deg,#ff6b35,#ffb347);
+    border-radius:2px; transition:width .3s ease;
+  }
+  #prewarm-pct {
+    font-size:11px; color:#666; letter-spacing:.1em;
+  }
+
   /* ── Aid station proximity alert ── */
   #aid-alert {
     position:absolute; top:14px; left:50%;
@@ -184,6 +213,14 @@
 
 <div style="position:relative;flex:1;display:flex;flex-direction:column;">
   <div id="map"></div>
+<div id="prewarm-overlay">
+  <div id="prewarm-box">
+    <div id="prewarm-title">LOADING SATELLITE IMAGERY</div>
+    <div id="prewarm-sub">Pre-fetching tiles along the route for smooth playback…</div>
+    <div id="prewarm-bar-wrap"><div id="prewarm-bar"></div></div>
+    <div id="prewarm-pct">0%</div>
+  </div>
+</div>
   <div id="runner-km">
   <div id="mouse-legend">
     <div class="leg-row"><span class="leg-icon">🖱</span><span class="leg-txt"><b>Scroll</b> — raise / lower elevation</span></div>
@@ -277,14 +314,14 @@ const totalDist = cum[cum.length-1];
 
 // Aid indices
 function kmIdx(m) { return cum.findIndex(d=>d>=m); }
-const AIDS = { barlow: kmIdx(11000), windsor: kmIdx(16000), wheatman: kmIdx(23000), goodwin: kmIdx(33000) };
+const AIDS = { barlow: kmIdx(11033), windsor: kmIdx(15754), wheatman: kmIdx(22531), goodwin: kmIdx(31650) };
 
 // Aid station display metadata
 const AID_META = {
-  barlow:   { label:'Barlow',          km:'11', color:'#e67e22' },
-  windsor:  { label:'Windsor Knot',    km:'16', color:'#e74c3c' },
-  wheatman: { label:'Wheatman',        km:'23', color:'#9b59b6' },
-  goodwin:  { label:'★ Goodwin',       km:'33', color:'#27ae60' },
+  barlow:   { label:'Barlow',          km:'11.03', color:'#e67e22' },
+  windsor:  { label:'Windsor Knot',    km:'15.75', color:'#e74c3c' },
+  wheatman: { label:'Wheatman',        km:'22.53', color:'#9b59b6' },
+  goodwin:  { label:'★ Goodwin',       km:'31.65', color:'#27ae60' },
 };
 
 function addScrubberTicks() {
@@ -328,7 +365,8 @@ const map = new maplibregl.Map({
   pitch: 60,
   bearing: 0,
   maxPitch: 85,
-  antialias: true
+  antialias: true,
+  maxTileCacheSize: 500
 });
 
 map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), 'top-right');
@@ -370,17 +408,50 @@ map.on('load', () => {
   initElevAsync();
 
   map.once('idle', () => {
-    // Tiles fully rendered — fly into the start position, then begin animation
-    setTimeout(() => {
+    // Overview rendered — begin tile pre-warm pass before starting flyover
+    setTimeout(() => startPreWarm(), 600);
+  });
+});
+
+// ── Tile pre-warm: jump camera through 30 positions to pre-fetch all route tiles ──
+const PREWARM_N = 30;
+function startPreWarm() {
+  const overlay = document.getElementById('prewarm-overlay');
+  const bar     = document.getElementById('prewarm-bar');
+  const pctEl   = document.getElementById('prewarm-pct');
+  let step = 0;
+
+  function jumpNext() {
+    if (step >= PREWARM_N) {
+      // All tiles fetched — hide overlay and begin flyover
+      overlay.style.display = 'none';
       const initBearing = getCamBearing(0);
       curBearing = initBearing;
       curMapBearing = initBearing;
-      const initMapBearing = initBearing;
-      map.flyTo({ center:[ROUTE[0][1], ROUTE[0][0]], zoom:15.5, pitch:60, bearing:initMapBearing, duration:3000, essential:true });
+      map.flyTo({ center:[ROUTE[0][1], ROUTE[0][0]], zoom:15.5, pitch:60, bearing:initBearing, duration:3000, essential:true });
       setTimeout(() => startAnim(), 3200);
-    }, 600);
-  });
-});
+      return;
+    }
+
+    const frac = step / (PREWARM_N - 1);
+    const routeIdx    = Math.min(ROUTE.length - 1,    Math.floor(frac * (ROUTE.length - 1)));
+    const bearingIdx  = Math.min(CAM_BEARINGS.length - 1, Math.floor(frac * (CAM_BEARINGS.length - 1)));
+    const [lat, lng]  = ROUTE[routeIdx];
+    const bear        = CAM_BEARINGS[bearingIdx];
+
+    const pct = Math.round((step / PREWARM_N) * 100);
+    bar.style.width  = pct + '%';
+    pctEl.textContent = pct + '%';
+
+    map.jumpTo({ center:[lng, lat], zoom:15.5, pitch:60, bearing:bear });
+
+    // Advance after idle fires, or after 2.5 s whichever comes first
+    let timer = setTimeout(() => { step++; jumpNext(); }, 2500);
+    map.once('idle', () => { clearTimeout(timer); step++; jumpNext(); });
+  }
+
+  jumpNext();
+}
 
 function mkGeo(pts) { return { type:'Feature', geometry:{ type:'LineString', coordinates: pts.map(([la,lo])=>[lo,la]) }}; }
 function mkPoint([la,lo]) { return { type:'Feature', geometry:{ type:'Point', coordinates:[lo,la] }}; }
@@ -521,10 +592,23 @@ function buildElevArray(sIdxs, sElev) {
 }
 
 function resizeElevCanvas() {
-  const canvas = document.getElementById('elev-canvas');
-  const strip  = document.getElementById('elev-strip');
-  if(!canvas||!strip||strip.offsetWidth===0) return;
-  canvas.width  = strip.offsetWidth  * devicePixelRatio;
+  const canvas   = document.getElementById('elev-canvas');
+  const strip    = document.getElementById('elev-strip');
+  const scrubber = document.getElementById('scrubber');
+  if (!canvas || !strip || !scrubber || strip.offsetWidth === 0) return;
+  // Align canvas to scrubber: anchor left edge, set width explicitly
+  const scrubRect = scrubber.getBoundingClientRect();
+  const stripRect = strip.getBoundingClientRect();
+  const leftPx = Math.max(0, scrubRect.left - stripRect.left);
+  const scrubW = scrubber.offsetWidth;
+  canvas.style.position = 'absolute';
+  canvas.style.top    = '0';
+  canvas.style.bottom = '0';
+  canvas.style.left   = leftPx + 'px';
+  canvas.style.right  = '';
+  canvas.style.width  = scrubW + 'px';
+  canvas.style.height = '';
+  canvas.width  = scrubW * devicePixelRatio;
   canvas.height = strip.offsetHeight * devicePixelRatio;
   if (ELEV) { cacheElevBg(); drawElevProfile(idx); }
 }
@@ -752,8 +836,8 @@ function animFrame(ts) {
   // Zoom — driven by scroll wheel (userZoom)
   const zoom = userZoom;
 
-  // jumpTo: our rAF loop handles all animation — no competing MapLibre transitions
-  map.jumpTo({ center, bearing: mapBearing, pitch: curPitch, zoom });
+  // easeTo: smooth interpolation between rAF frames — prevents jitter when tiles are pre-loaded
+  map.easeTo({ center, bearing: mapBearing, pitch: curPitch, zoom, duration: 100, easing: t => t });
 
   // Update runner marker
   if (map.getSource('runner')) {
