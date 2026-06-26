@@ -9846,37 +9846,87 @@ map.on('load', () => {
   });
 });
 
-// ── Tile pre-warm ──
-const PREWARM_N = 30;
-function startPreWarm() {
+// ── Tile pre-fetch: directly fetch all route tiles into browser HTTP cache ──
+// Zoom 13 (overview), 14 (mid), 15 (detail) — 272 tiles total, ~21 MB
+// ESRI tile URL: tile/{z}/{y}/{x}
+function tileBounds(lat, lon, z) {
+  const x = Math.floor((lon + 180) / 360 * Math.pow(2, z));
+  const y = Math.floor((1 - Math.log(Math.tan(lat * Math.PI / 180) + 1 / Math.cos(lat * Math.PI / 180)) / Math.PI) / 2 * Math.pow(2, z));
+  return { x, y };
+}
+
+function buildTileList() {
+  const lats = ROUTE.map(p => p[0]), lons = ROUTE.map(p => p[1]);
+  const BUF = 0.025;
+  const minLat = Math.min(...lats) - BUF, maxLat = Math.max(...lats) + BUF;
+  const minLon = Math.min(...lons) - BUF, maxLon = Math.max(...lons) + BUF;
+  const BASE = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile';
+  const urls = [];
+  for (const z of [13, 14, 15]) {
+    const tl = tileBounds(maxLat, minLon, z);
+    const br = tileBounds(minLat, maxLon, z);
+    for (let x = tl.x; x <= br.x; x++)
+      for (let y = tl.y; y <= br.y; y++)
+        urls.push(`${BASE}/${z}/${y}/${x}`);
+  }
+  return urls;
+}
+
+async function startPreWarm() {
   const overlay = document.getElementById('prewarm-overlay');
   const bar     = document.getElementById('prewarm-bar');
   const pctEl   = document.getElementById('prewarm-pct');
-  let step = 0;
+  const sub     = document.getElementById('prewarm-sub');
 
-  function jumpNext() {
-    if (step >= PREWARM_N) {
-      overlay.style.display = 'none';
-      const initBearing = getCamBearing(0);
-      curBearing = initBearing;
-      curMapBearing = initBearing;
-      map.flyTo({ center:[ROUTE[0][1], ROUTE[0][0]], zoom:15.5, pitch:60, bearing:initBearing, duration:3000, essential:true });
-      setTimeout(() => startAnim(), 3200);
-      return;
-    }
-    const frac = step / (PREWARM_N - 1);
-    const routeIdx   = Math.min(ROUTE.length - 1,       Math.floor(frac * (ROUTE.length - 1)));
-    const bearingIdx = Math.min(CAM_BEARINGS.length - 1, Math.floor(frac * (CAM_BEARINGS.length - 1)));
-    const [lat, lng] = ROUTE[routeIdx];
-    const bear       = CAM_BEARINGS[bearingIdx];
-    const pct = Math.round((step / PREWARM_N) * 100);
+  const tiles = buildTileList();
+  sub.textContent = `Downloading ${tiles.length} map tiles (~21 MB) for smooth playback…`;
+
+  const CONCURRENT = 12;
+  let done = 0;
+
+  async function fetchBatch(batch) {
+    await Promise.allSettled(batch.map(url =>
+      fetch(url, { mode: 'cors', cache: 'force-cache' }).catch(() => {})
+    ));
+    done += batch.length;
+    const pct = Math.min(100, Math.round(done / tiles.length * 100));
     bar.style.width   = pct + '%';
     pctEl.textContent = pct + '%';
-    map.jumpTo({ center:[lng, lat], zoom:15.5, pitch:60, bearing:bear });
-    let timer = setTimeout(() => { step++; jumpNext(); }, 2500);
-    map.once('idle', () => { clearTimeout(timer); step++; jumpNext(); });
   }
-  jumpNext();
+
+  // Fetch in concurrent batches
+  for (let i = 0; i < tiles.length; i += CONCURRENT) {
+    await fetchBatch(tiles.slice(i, i + CONCURRENT));
+  }
+
+  // Brief camera sweep to warm MapLibre's WebGL texture cache
+  sub.textContent = 'Warming 3D renderer…';
+  bar.style.width = '100%';
+  await warmMapLibreCache();
+
+  overlay.style.display = 'none';
+  const initBearing = getCamBearing(0);
+  curBearing = initBearing;
+  curMapBearing = initBearing;
+  map.flyTo({ center:[ROUTE[0][1], ROUTE[0][0]], zoom:15.5, pitch:60, bearing:initBearing, duration:3000, essential:true });
+  setTimeout(() => startAnim(), 3200);
+}
+
+function warmMapLibreCache() {
+  return new Promise(resolve => {
+    const STOPS = 8;
+    let step = 0;
+    function next() {
+      if (step >= STOPS) { resolve(); return; }
+      const frac = step / (STOPS - 1);
+      const ri = Math.min(ROUTE.length - 1, Math.floor(frac * (ROUTE.length - 1)));
+      const bi = Math.min(CAM_BEARINGS.length - 1, Math.floor(frac * (CAM_BEARINGS.length - 1)));
+      map.jumpTo({ center:[ROUTE[ri][1], ROUTE[ri][0]], zoom:15.5, pitch:60, bearing:CAM_BEARINGS[bi] });
+      let t = setTimeout(() => { step++; next(); }, 800);
+      map.once('idle', () => { clearTimeout(t); step++; next(); });
+    }
+    next();
+  });
 }
 
 function mkGeo(pts) { return { type:'Feature', geometry:{ type:'LineString', coordinates: pts.map(([la,lo])=>[lo,la]) }}; }
@@ -9963,7 +10013,10 @@ function frame(ts) {
   const dt = Math.min(ts - lastTime, 100);
   lastTime = ts;
 
-  const step = speed * dt * 0.001 * 8;
+  // Adaptive speed: slow to 5% when satellite tiles are still loading
+  const tilesReady = map.isSourceLoaded('satellite');
+  const effectiveSpeed = tilesReady ? speed : speed * 0.05;
+  const step = effectiveSpeed * dt * 0.001 * 8;
   idx = Math.min(idx + step, ROUTE.length - 1);
 
   const iFloor = Math.floor(idx);
