@@ -8,7 +8,8 @@
 <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
 <style>
   * { margin:0; padding:0; box-sizing:border-box; }
-  body { background:#000; color:#ccc; font-family:'Inter',system-ui,sans-serif; height:100vh; display:flex; flex-direction:column; overflow:hidden; }
+  body { background:#000; margin:0; padding:0; overflow:hidden; width:100vw; height:100vh; display:flex; align-items:center; justify-content:center; }
+  #flyover-app { width:1280px; height:720px; display:flex; flex-direction:column; overflow:hidden; transform-origin:top left; position:absolute; color:#ccc; font-family:'Inter',system-ui,sans-serif; }
   #header {
     background:#0a0a0a; border-bottom:1px solid #1a1a1a;
     padding:8px 16px; display:flex; align-items:center; gap:16px; flex-shrink:0; z-index:10;
@@ -147,6 +148,7 @@
 </style>
 </head>
 <body>
+<div id="flyover-app">
 <div id="header">
   <div>
     <div id="header" style="display:contents">
@@ -9960,7 +9962,7 @@ map.on('load', () => {
   });
   canvas.addEventListener('mousemove', (e) => {
     if (!manualMode || e.buttons !== 1) return;
-    const dx = e.clientX - dragStartX;
+    const dx = (e.clientX - dragStartX) / currentScale;
     manualBearing = (dragStartBearing + dx * 0.4 + 360) % 360;
     curMapBearing = manualBearing;
   });
@@ -10258,6 +10260,23 @@ function drawElevProfile(i) {
 
 window.addEventListener('resize', resizeElevCanvas);
 
+// ── Fixed 1280×720 render resolution — scale to fit any window/fullscreen ──
+let currentScale = 1;
+function scaleAppToFit() {
+  const app = document.getElementById('flyover-app');
+  const s = Math.min(window.innerWidth / 1280, window.innerHeight / 720);
+  currentScale = s;
+  const left = (window.innerWidth  - 1280 * s) / 2;
+  const top  = (window.innerHeight - 720  * s) / 2;
+  app.style.transform = `scale(${s})`;
+  app.style.left = left + 'px';
+  app.style.top  = top  + 'px';
+}
+scaleAppToFit();
+window.addEventListener('resize', scaleAppToFit);
+document.addEventListener('fullscreenchange',       scaleAppToFit);
+document.addEventListener('webkitfullscreenchange', scaleAppToFit);
+
 // ── Pause animation on resize/fullscreen until tiles settle ──
 let resizePauseTimer = null;
 
@@ -10287,5 +10306,6 @@ document.addEventListener('fullscreenchange', handleViewportChange);
 document.addEventListener('webkitfullscreenchange', handleViewportChange);
 document.addEventListener('mozfullscreenchange', handleViewportChange);
 </script>
+</div><!-- /flyover-app -->
 </body>
 </html>
