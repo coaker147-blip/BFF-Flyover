@@ -10195,9 +10195,8 @@ function resizeElevCanvas() {
   const strip    = document.getElementById('elev-strip');
   const scrubber = document.getElementById('scrubber');
   if (!canvas || !strip || !scrubber || strip.offsetWidth === 0) return;
-  const scrubRect = scrubber.getBoundingClientRect();
-  const stripRect = strip.getBoundingClientRect();
-  const leftPx = Math.max(0, scrubRect.left - stripRect.left);
+  // offsetLeft/offsetWidth are in unscaled CSS pixels — immune to CSS transform scaling
+  const leftPx = Math.max(0, scrubber.offsetLeft - strip.offsetLeft);
   const scrubW = scrubber.offsetWidth;
   canvas.style.position = 'absolute';
   canvas.style.top    = '0';
