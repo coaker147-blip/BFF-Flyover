@@ -2,10 +2,11 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' https://unpkg.com; style-src 'unsafe-inline' https://unpkg.com; img-src data: blob: https://server.arcgisonline.com; connect-src https://server.arcgisonline.com https://api.opentopodata.org https://demotiles.maplibre.org https://s3.amazonaws.com; font-src https://demotiles.maplibre.org; worker-src blob:;">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>BFF 50k — 3D Bird's Eye Flyover</title>
-<link href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet">
-<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+<link href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet" integrity="sha384-MinO0mNliZ3vwppuPOUnGa+iq619pfMhLVUXfC4LHwSCvF9H+6P/KO4Q7qBOYV5V" crossorigin="anonymous">
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js" integrity="sha384-SYKAG6cglRMN0RVvhNeBY0r3FYKNOJtznwA0v7B5Vp9tr31xAHsZC0DqkQ/pZDmj" crossorigin="anonymous"></script>
 <style>
   * { margin:0; padding:0; box-sizing:border-box; }
   body { background:#000; margin:0; padding:0; overflow:hidden; width:100vw; height:100vh; display:flex; align-items:center; justify-content:center; }
@@ -9992,7 +9993,12 @@ function showAidAlert(key) {
   const m = AID_META[key];
   currentAlertKey = key;
   document.getElementById('aa-dot').style.background = m.color;
-  document.getElementById('aa-txt').innerHTML = `<b>${m.label}</b> ahead · km ${m.km}`;
+  const _aTxt = document.getElementById('aa-txt');
+  const _aB = document.createElement('b');
+  _aB.textContent = m.label;
+  _aTxt.textContent = '';
+  _aTxt.appendChild(_aB);
+  _aTxt.appendChild(document.createTextNode(` ahead · km ${m.km}`));
   document.getElementById('aid-alert').classList.add('show');
 }
 function hideAidAlert() {
